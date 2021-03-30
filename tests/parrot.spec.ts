@@ -6,26 +6,12 @@ import {
   workspace
 } from "@project-serum/anchor";
 import { NodeWallet } from "@project-serum/anchor/dist/provider";
-import { TokenInstructions } from "@project-serum/serum";
+import { TokenInstructions, } from "@project-serum/serum";
 import { Token, u64 } from "@solana/spl-token";
 import assert from "assert";
+import { createToken, newAccountWithLamports } from "./utils";
 
-async function createToken(
-  connection: web3.Connection,
-  payer: web3.Account,
-  mintAuthority: web3.PublicKey,
-  decimals = 8
-) {
-  const token = await Token.createMint(
-    connection,
-    payer,
-    mintAuthority,
-    null,
-    decimals,
-    TokenInstructions.TOKEN_PROGRAM_ID
-  );
-  return token;
-}
+
 
 describe("Parrot Lending", async () => {
   // Configure the client to use the local cluster.
@@ -42,7 +28,7 @@ describe("Parrot Lending", async () => {
   const collateralToken = new web3.Account();
 
   const vault = new web3.Account();
-  const collateralTokenHolder = new web3.Account();
+  let collateralTokenHolder:web3.PublicKey;
 
   /**
    * pUSD
@@ -55,7 +41,7 @@ describe("Parrot Lending", async () => {
 
   it("Init new Dept Type (pUSD)", async () => {
     const [mintAuthority, nonce] = await web3.PublicKey.findProgramAddress(
-      [wallet.publicKey.toBuffer()],
+      [debtToken.publicKey.toBuffer()],
       program.programId
     );
     deptTokenAccount = await createToken(
@@ -83,17 +69,17 @@ describe("Parrot Lending", async () => {
   });
 
   it("Init new Vault Type (BTC)", async () => {
-    // const [mintAuthority, nonce] = await web3.PublicKey.findProgramAddress(
-    //   [wallet.publicKey.toBuffer()],
-    //   program.programId
-    // );
-    // TODO: VaultType should be the minter? how to mint coin to user wallet collateralFrom then?
-    const nonce = 0;
+    const [mintAuthority, nonce] = await web3.PublicKey.findProgramAddress(
+      [wallet.publicKey.toBuffer()],
+      program.programId
+    );
     collateralTokenAccount = await createToken(
       provider.connection,
       wallet.payer,
-      wallet.publicKey
-      // mintAuthority
+      mintAuthority,
+    );
+    collateralTokenHolder = await collateralTokenAccount.createAccount(
+      vaultType.publicKey
     );
 
     await program.rpc.initVaultType(nonce, {
@@ -102,7 +88,7 @@ describe("Parrot Lending", async () => {
         vaultType: vaultType.publicKey,
         owner: wallet.publicKey,
         collateralToken: collateralToken.publicKey,
-        collateralTokenHolder: collateralTokenHolder.publicKey,
+        collateralTokenHolder: collateralTokenHolder,
         rent: web3.SYSVAR_RENT_PUBKEY,
       },
       signers: [vaultType],
@@ -141,51 +127,47 @@ describe("Parrot Lending", async () => {
   });
 
   it("Stake (Deposit)", async () => {
+    const userWallet = wallet; // await newAccountWithLamports(provider.connection)
     const stakeAmount = new BN(100);
-    const userAccount = new web3.Account();
 
     // Create a token for the user wallet to use as collateral and Mint the amount we want to stake
     const userCollateralFrom = await collateralTokenAccount.createAccount(
-      userAccount.publicKey
+      userWallet.publicKey
     );
-    await collateralTokenAccount.mintTo(
-      userCollateralFrom,
-      wallet.publicKey,
-      [],
-      new u64(stakeAmount.toString())
-    );
-    const userCollateralFromInfo = await collateralTokenAccount.getAccountInfo(
-      userCollateralFrom
-    );
-    assert.ok(userCollateralFromInfo.amount.eq(stakeAmount));
+    // await collateralTokenAccount.mintTo(
+    //   userCollateralFrom,
+    //   collateralToken.publicKey,
+    //   [],
+    //   new u64(stakeAmount.toString())
+    // );
+    // const userCollateralFromInfo = await collateralTokenAccount.getAccountInfo(
+    //   userCollateralFrom
+    // );
+    // assert.ok(userCollateralFromInfo.amount.eq(stakeAmount));
 
-
+    console.log('initStake');
+    
     // Create a signer to transfer the user token to collateralTokenHolder address
-    const [signer, nonce] = await web3.PublicKey.findProgramAddress(
-      [userAccount.publicKey.toBuffer()],
+    const [_, nonce] = await web3.PublicKey.findProgramAddress(
+      [vaultType.publicKey.toBuffer()],
       program.programId
     )
 
-    const stake = new web3.Account();
-
-    await program.rpc.initStake(stakeAmount, nonce, {
+    await program.rpc.stake(stakeAmount, nonce, {
       accounts: {
-        stake: stake.publicKey,
         vaultType: vaultType.publicKey,
         vault: vault.publicKey,
         collateralFrom: userCollateralFrom,
-        collateralFromAuthority: signer,
-        collateralTo: collateralTokenHolder.publicKey,
+        collateralFromAuthority: userWallet.publicKey,
+        collateralTo: collateralTokenHolder,
         tokenProgram: TokenInstructions.TOKEN_PROGRAM_ID,
         rent: web3.SYSVAR_RENT_PUBKEY,
       },
-      signers: [stake],
-      instructions: [await program.account.stake.createInstruction(stake)],
+      signers: [],
     });
 
-    const stakeAccount = await program.account.stake(stake.publicKey);
 
-    console.log("stakeAccount", stakeAccount);
+    console.log("TODO: check the vault");
 
   });
 

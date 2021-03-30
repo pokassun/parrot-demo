@@ -52,13 +52,12 @@ mod parrot {
         Ok(())
     }
 
-    pub fn init_stake(
-        ctx: Context<InitStake>,
+    pub fn stake(
+        ctx: Context<Stake>,
         amount: u64,
         collateral_holder_nonce: u8,
     ) -> Result<()> {
-        let account = &mut ctx.accounts.stake;
-        account.vault = ctx.accounts.vault.to_account_info().key.clone();
+        let vault = ctx.accounts.vault.to_account_info().key.clone();
 
         // transfer from user token account to collateral holding account
         let seeds = &[
@@ -75,8 +74,10 @@ mod parrot {
         };
 
         let cpi_program = ctx.accounts.token_program.clone();
+        
         let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer);
-        token::transfer(cpi_ctx, amount);
+        
+        token::transfer(cpi_ctx, amount)?;
 
         // TODO: update vault debt_amount and collateral_amount
         // vault.collateral_amount = vault
@@ -138,21 +139,18 @@ pub struct InitVault<'info> {
 // Workflow Instructions
 
 #[derive(Accounts)]
-pub struct InitStake<'info> {
+pub struct Stake<'info> {
     vault_type: ProgramAccount<'info, VaultType>,
 
     #[account(has_one=vault_type)]
     vault: ProgramAccount<'info, Vault>,
-
-    #[account(init)]
-    stake: ProgramAccount<'info, Stake>,
 
     #[account("token_program.key == &token::ID")]
     token_program: AccountInfo<'info>,
 
     collateral_from: AccountInfo<'info>,
 
-    // #[account(signer, "&collateral_from.owner == collateral_from_authority")]
+    #[account(signer)]
     collateral_from_authority: AccountInfo<'info>,
 
     #[account("&vault_type.collateral_token_holder == collateral_to.key")]
@@ -197,16 +195,6 @@ pub struct Vault {
     debt_amount: u64,
     //
     collateral_amount: u64,
-}
-
-#[account]
-pub struct Stake {
-    // belongs_to Vault
-    vault: Pubkey,
-
-    amount: u64,
-
-    collateral_holder_nonce: u8,
 }
 
 // Define errors
