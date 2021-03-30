@@ -69,17 +69,18 @@ describe("Parrot Lending", async () => {
   });
 
   it("Init new Vault Type (BTC)", async () => {
-    const [mintAuthority, nonce] = await web3.PublicKey.findProgramAddress(
+    // Vault should not have a nonce since doesn't control the collateralToken
+    const [_, nonce] = await web3.PublicKey.findProgramAddress(
       [wallet.publicKey.toBuffer()],
       program.programId
     );
     collateralTokenAccount = await createToken(
       provider.connection,
       wallet.payer,
-      mintAuthority,
+      wallet.publicKey,
     );
     collateralTokenHolder = await collateralTokenAccount.createAccount(
-      vaultType.publicKey
+      wallet.publicKey,
     );
 
     await program.rpc.initVaultType(nonce, {
@@ -127,29 +128,29 @@ describe("Parrot Lending", async () => {
   });
 
   it("Stake (Deposit)", async () => {
-    const userWallet = wallet; // await newAccountWithLamports(provider.connection)
+    const userWallet = await newAccountWithLamports(provider.connection)
     const stakeAmount = new BN(100);
 
     // Create a token for the user wallet to use as collateral and Mint the amount we want to stake
-    const userCollateralFrom = await collateralTokenAccount.createAccount(
+    const userCollateralAccount = await collateralTokenAccount.createAccount(
       userWallet.publicKey
     );
-    // await collateralTokenAccount.mintTo(
-    //   userCollateralFrom,
-    //   collateralToken.publicKey,
-    //   [],
-    //   new u64(stakeAmount.toString())
-    // );
-    // const userCollateralFromInfo = await collateralTokenAccount.getAccountInfo(
-    //   userCollateralFrom
-    // );
-    // assert.ok(userCollateralFromInfo.amount.eq(stakeAmount));
+    await collateralTokenAccount.mintTo(
+      userCollateralAccount,
+      wallet.publicKey,
+      [],
+      new u64(stakeAmount.toString())
+    );
+    const checkBalance = await collateralTokenAccount.getAccountInfo(
+      userCollateralAccount
+    );
+    assert.ok(checkBalance.amount.eq(stakeAmount));
 
-    console.log('initStake');
+    console.log('collateralTokenAccount', collateralTokenAccount.publicKey.toBase58());
     
     // Create a signer to transfer the user token to collateralTokenHolder address
-    const [_, nonce] = await web3.PublicKey.findProgramAddress(
-      [vaultType.publicKey.toBuffer()],
+    const [signer, nonce] = await web3.PublicKey.findProgramAddress(
+      [collateralTokenAccount.publicKey.toBuffer()],
       program.programId
     )
 
@@ -157,13 +158,23 @@ describe("Parrot Lending", async () => {
       accounts: {
         vaultType: vaultType.publicKey,
         vault: vault.publicKey,
-        collateralFrom: userCollateralFrom,
-        collateralFromAuthority: userWallet.publicKey,
+        collateralFrom: userCollateralAccount,
+        collateralFromAuthority: collateralToken.publicKey,
         collateralTo: collateralTokenHolder,
         tokenProgram: TokenInstructions.TOKEN_PROGRAM_ID,
         rent: web3.SYSVAR_RENT_PUBKEY,
       },
-      signers: [],
+      signers: [userWallet],
+      // instructions: [
+      //   Token.createTransferInstruction(
+      //     program.programId,
+      //     userCollateralAccount,
+      //     collateralTokenHolder,
+      //     userWallet.publicKey,
+      //     [],
+      //     new u64(stakeAmount.toString())
+      //   )
+      // ]
     });
 
 
