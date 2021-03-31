@@ -17,15 +17,14 @@ import { TokenInstructions } from "@project-serum/serum";
 import { mintTo } from "@project-serum/serum/lib/token-instructions";
 import assert from "assert";
 
-export interface ProgramState {
-  priceOracle: web3.PublicKey;
-  debtToken: web3.PublicKey;
+export interface ProgramState {  
   debtType: web3.PublicKey;
+  debtToken: web3.PublicKey;
+  debtMinter: web3.PublicKey;
 
   vaultType: web3.PublicKey;
-  // owned by admin wallet for testing
+
   collateralToken: web3.PublicKey;
-  // owned by admin wallet for testing
   collateralTokenHolder: web3.PublicKey;
 }
 
@@ -38,9 +37,9 @@ export interface UserState {
 }
 
 const programState: ProgramState = {
-  priceOracle: null,
-  debtToken: null,
   debtType: null,
+  debtToken: null,
+  debtMinter: null,
   vaultType: null,
   collateralToken: null,
   collateralTokenHolder: null,
@@ -83,8 +82,9 @@ describe("Parrot Lending", async () => {
       ],
     });
 
-    programState.debtToken = debtToken;
     programState.debtType = debtType.publicKey;
+    programState.debtToken = debtToken;
+    programState.debtMinter = debtMinter;
 
     const debtTypeAccount = await program.account.debtType(debtType.publicKey);
 
@@ -93,7 +93,6 @@ describe("Parrot Lending", async () => {
 
   it("Init new Vault Type (BTC)", async () => {
     const vaultType = new web3.Account();
-    const priceOracle = new web3.Account();
 
     const collateralToken = await createMint(provider, wallet.publicKey, 9);
 
@@ -123,9 +122,8 @@ describe("Parrot Lending", async () => {
       ],
     });
 
-    programState.priceOracle = priceOracle.publicKey;
-    programState.collateralToken = collateralToken;
     programState.vaultType = vaultType.publicKey;
+    programState.collateralToken = collateralToken;
     programState.collateralTokenHolder = collateralTokenHolder;
 
     const vaultTypeAccount = await program.account.vaultType(
@@ -135,7 +133,7 @@ describe("Parrot Lending", async () => {
     assert.ok(vaultTypeAccount.nonce === nonce);
   });
 
-  it("create user collateral token account and airdrop 1000 BTC for testing", async () => {
+  it("Create user collateral token account and airdrop 1000 BTC for testing", async () => {
     const collateralTokenAccount = await createTokenAccount(
       provider,
       programState.collateralToken,
@@ -160,10 +158,11 @@ describe("Parrot Lending", async () => {
       provider,
       collateralTokenAccount
     );
+
     assert.ok(checkBalance.amount.eq(airdropAmount));
   });
 
-  it("create user debt token account for testing", async () => {
+  it("Create user debt token account for testing", async () => {
     const debtTokenAccount = await createTokenAccount(
       provider,
       programState.debtToken,
@@ -198,7 +197,7 @@ describe("Parrot Lending", async () => {
     assert.ok(vaultAccount.collateralAmount.eq(collateralAmount));
   });
 
-  it("User Stake (Deposit)", async () => {
+  it("User Stake (Deposit) 100 BTC", async () => {
     // amount to stake
     const amount = new BN(100);
 
@@ -222,7 +221,34 @@ describe("Parrot Lending", async () => {
     assert.ok(vaultCollateralBalance.amount.eq(amount));    
   });
 
-  it("Mint (Borrow)", async () => {
-    //
+  it("User Mint (Borrow) 10 pUSD", async () => {
+    // amount to borrow
+    const amount = new BN(10);
+
+    // const debtMinter = await this.programAccount(
+    //   this.deploy.debtType,
+    //   "minter",
+    // );
+
+    await program.rpc.borrow(amount, {
+      accounts: {
+        debtType: programState.debtType,
+        vaultType: programState.vaultType,
+        debtToken: programState.debtToken, // can we use the one from debtType
+        vault: userState.vault,
+        debtMinter: programState.debtMinter,
+        debtTo: userState.debtTokenAccount,
+        tokenProgram: TokenInstructions.TOKEN_PROGRAM_ID,
+        // priceOracle: this.deploy.priceOracle,
+      },
+    });
+
+    const vaultAccount = await program.account.vault(userState.vault);
+    const userDebtBalance = await getTokenAccount(
+      provider,
+      userState.debtTokenAccount
+    );
+    assert.ok(vaultAccount.debtAmount.eq(amount));
+    assert.ok(userDebtBalance.amount.eq(amount));  
   });
 });
