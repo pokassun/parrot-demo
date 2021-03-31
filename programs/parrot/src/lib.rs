@@ -8,7 +8,7 @@ use anchor_spl::token::{self};
 #[program]
 mod parrot {
 
-    use anchor_spl::token::{self, MintTo, Transfer};
+    use anchor_spl::token::{self, MintTo, Transfer, Burn};
 
     use super::*;
 
@@ -55,7 +55,7 @@ mod parrot {
     pub fn stake(ctx: Context<Stake>, amount: u64) -> Result<()> {
         let vault = &mut ctx.accounts.vault;
 
-        // transfer collateral from user to vault
+        // transfer collateral from user to vault_type
         let cpi_accounts = Transfer {
             from: ctx.accounts.collateral_from.to_account_info(),
             to: ctx.accounts.collateral_to.to_account_info(),
@@ -63,9 +63,9 @@ mod parrot {
         };
         let cpi_program = ctx.accounts.token_program.clone();
         let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-
         token::transfer(cpi_ctx, amount)?;
 
+        // Update vault state
         vault.collateral_amount = vault
             .collateral_amount
             .checked_add(amount)
@@ -78,24 +78,75 @@ mod parrot {
         let vault = &mut ctx.accounts.vault;
         let debt_type =  &ctx.accounts.debt_type;
 
-        // transfer dept from debt minter to user
+        // transfer (mint) dept from debt_type to user
         let seeds = &[
             ctx.accounts.debt_type.to_account_info().key.as_ref(),
             &[debt_type.nonce],
         ];
         let signer = &[&seeds[..]];
         let cpi_accounts = MintTo {
-            mint: ctx.accounts.debt_token.to_account_info().clone(),
-            to: ctx.accounts.debt_to.to_account_info().clone(),
-            authority: ctx.accounts.debt_minter.to_account_info().clone(),
+            mint: ctx.accounts.debt_token.to_account_info(),
+            to: ctx.accounts.receiver.to_account_info(),
+            authority: ctx.accounts.debt_token_authority.to_account_info(),
         };
         let cpi_program = ctx.accounts.token_program.clone();
         let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer);
         token::mint_to(cpi_ctx, amount)?;
 
+        // Update vault state
         vault.debt_amount = vault
             .debt_amount
             .checked_add(amount)
+            .ok_or(ParrotError::NumberOverflow)?;
+
+        Ok(())
+    }
+
+    pub fn repay(ctx: Context<Repay>, amount: u64) -> Result<()> {
+        let vault = &mut ctx.accounts.vault;
+
+        // burn the dept from user wallet
+        let cpi_accounts = Burn {
+            mint: ctx.accounts.debt_token.to_account_info(),
+            to: ctx.accounts.debt_from.to_account_info(),
+            authority: ctx.accounts.debt_from_authority.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.clone();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        token::burn(cpi_ctx, amount)?;
+
+        // Update vault state
+        vault.debt_amount = vault
+            .debt_amount
+            .checked_sub(amount)
+            .ok_or(ParrotError::NumberOverflow)?;
+
+        Ok(())
+    }
+
+    pub fn unstake(ctx: Context<Unstake>, amount: u64) -> Result<()> {
+        let vault = &mut ctx.accounts.vault;
+        let vault_type =  &ctx.accounts.vault_type;
+
+        // transfer (withdraw) from the volt_type the user collateral
+        let seeds = &[
+            ctx.accounts.vault_type.to_account_info().key.as_ref(),
+            &[vault_type.nonce],
+        ];
+        let signer = &[&seeds[..]];
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.collateral_token_holder.to_account_info(),
+            to: ctx.accounts.receiver.to_account_info(),
+            authority: ctx.accounts.collateral_token_holder_authority.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.clone();
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer);
+        token::transfer(cpi_ctx, amount)?;
+
+        // Update vault state
+        vault.collateral_amount = vault
+            .collateral_amount
+            .checked_sub(amount)
             .ok_or(ParrotError::NumberOverflow)?;
 
         Ok(())
@@ -180,19 +231,69 @@ pub struct Borrow<'info> {
     #[account(mut, has_one=vault_type)]
     vault: ProgramAccount<'info, Vault>,
 
+    #[account(mut, "&vault.owner == vault_owner.key")]
+    vault_owner: AccountInfo<'info>,
+
     #[account("token_program.key == &token::ID")]
     token_program: AccountInfo<'info>,
 
     #[account(mut, "&debt_type.debt_token == debt_token.key")]
     debt_token: AccountInfo<'info>,
 
-    #[account(mut, "&debt_type.debt_token == debt_token.key")]
-    debt_minter: AccountInfo<'info>,
+    debt_token_authority: AccountInfo<'info>,
 
     #[account(mut)]
-    debt_to: AccountInfo<'info>, 
+    receiver: AccountInfo<'info>,
+}
 
-    // vault_owner: AccountInfo<'info>,
+#[derive(Accounts)]
+pub struct Repay<'info> {
+    debt_type: ProgramAccount<'info, DebtType>,
+
+    vault_type: ProgramAccount<'info, VaultType>,
+
+    #[account(mut, has_one=vault_type)]
+    vault: ProgramAccount<'info, Vault>,
+
+    #[account(mut, "&vault.owner == vault_owner.key")]
+    vault_owner: AccountInfo<'info>,
+
+    #[account("token_program.key == &token::ID")]
+    token_program: AccountInfo<'info>,
+
+    #[account(mut, "&debt_type.debt_token == debt_token.key")]
+    debt_token: AccountInfo<'info>,
+
+    #[account(mut)]
+    debt_from: AccountInfo<'info>, 
+
+    debt_from_authority: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct Unstake<'info> {
+    vault_type: ProgramAccount<'info, VaultType>,
+
+    #[account(mut, has_one=vault_type)]
+    vault: ProgramAccount<'info, Vault>,
+
+    #[account(mut, "&vault.owner == vault_owner.key")]
+    vault_owner: AccountInfo<'info>,
+
+    #[account("token_program.key == &token::ID")]
+    token_program: AccountInfo<'info>,
+
+    // adding the below check cause "custom program error: 0x1", we need to investigate
+    #[account(mut)] // "&vault_type.collateral_token == collateral_token.key")]
+    collateral_token: AccountInfo<'info>,
+
+    #[account(mut, "&vault_type.collateral_token_holder == collateral_token_holder.key")]
+    collateral_token_holder: AccountInfo<'info>,
+
+    collateral_token_holder_authority: AccountInfo<'info>,
+
+    #[account(mut)]
+    receiver: AccountInfo<'info>,
 }
 
 // Define the program owned accounts.
@@ -239,4 +340,7 @@ pub struct Vault {
 pub enum ParrotError {
     #[msg("number overflow the u64")]
     NumberOverflow,
+
+    #[msg("try to repay more then borrowed")]
+    RepayToMuch,
 }
