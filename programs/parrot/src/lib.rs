@@ -1,7 +1,7 @@
 #![feature(proc_macro_hygiene)]
 
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, TokenAccount, Transfer};
+use anchor_spl::token::{self};
 
 // Define the program's instruction handlers.
 
@@ -44,46 +44,38 @@ mod parrot {
         debt_amount: u64,
         collateral_amount: u64,
     ) -> Result<()> {
-        let account = &mut ctx.accounts.vault;
-        account.vault_type = ctx.accounts.vault_type.to_account_info().key.clone();
-        account.owner = ctx.accounts.owner.key.clone();
-        account.debt_amount = debt_amount;
-        account.collateral_amount = collateral_amount;
+        let vault = &mut ctx.accounts.vault;
+        vault.vault_type = ctx.accounts.vault_type.to_account_info().key.clone();
+        vault.owner = ctx.accounts.owner.key.clone();
+        vault.debt_amount = debt_amount;
+        vault.collateral_amount = collateral_amount;
         Ok(())
     }
 
     pub fn stake(
         ctx: Context<Stake>,
         amount: u64,
-        collateral_holder_nonce: u8,
     ) -> Result<()> {
-        let vault = ctx.accounts.vault.to_account_info().key.clone();
-
-        // transfer from user token account to collateral holding account
-        let seeds = &[
-            ctx.accounts.collateral_from_authority.key.as_ref(),
-            &[collateral_holder_nonce],
-        ];
-        let signer = &[&seeds[..]];
+        let vault = &mut ctx.accounts.vault;
 
         let cpi_accounts = Transfer {
             from: ctx.accounts.collateral_from.to_account_info(),
-            // TODO: can we access and use directly the vault_type.collateral_token_holder? so we don't need collateral_to
             to: ctx.accounts.collateral_to.to_account_info(),
             authority: ctx.accounts.collateral_from_authority.to_account_info(),
         };
 
         let cpi_program = ctx.accounts.token_program.clone();
         
-        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer);
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
         
         token::transfer(cpi_ctx, amount)?;
 
-        // TODO: update vault debt_amount and collateral_amount
-        // vault.collateral_amount = vault
-        // .collateral_amount
-        // .checked_add(self.amount)
-        // .ok_or(Error::Overflow)?;
+        vault.collateral_amount = vault
+        .collateral_amount
+        .checked_add(amount)
+        .ok_or(ParrotError::NumberOverflow)?;
+
+        msg!("Amount {}", vault.collateral_amount);
 
         Ok(())
     }
@@ -142,21 +134,20 @@ pub struct InitVault<'info> {
 pub struct Stake<'info> {
     vault_type: ProgramAccount<'info, VaultType>,
 
-    #[account(has_one=vault_type)]
+    #[account(mut, has_one=vault_type)]
     vault: ProgramAccount<'info, Vault>,
 
     #[account("token_program.key == &token::ID")]
     token_program: AccountInfo<'info>,
 
+    #[account(mut)]
     collateral_from: AccountInfo<'info>,
 
-    #[account(signer)]
+    // #[account(signer)]
     collateral_from_authority: AccountInfo<'info>,
 
-    #[account("&vault_type.collateral_token_holder == collateral_to.key")]
+    #[account(mut, "&vault_type.collateral_token_holder == collateral_to.key")]
     collateral_to: AccountInfo<'info>,
-
-    rent: Sysvar<'info, Rent>,
 }
 
 // Define the program owned accounts.
@@ -201,6 +192,6 @@ pub struct Vault {
 
 #[error]
 pub enum ParrotError {
-    #[msg("ExampleError")]
-    ExampleError,
+    #[msg("number overflow the u64")]
+    NumberOverflow,
 }
