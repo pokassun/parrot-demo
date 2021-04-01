@@ -5,8 +5,8 @@ import {
   web3,
   workspace,
   Program,
+  Wallet,
 } from "@project-serum/anchor";
-import { NodeWallet } from "@project-serum/anchor/dist/provider";
 import {
   createMint,
   createTokenAccount,
@@ -16,6 +16,7 @@ import {
 import { TokenInstructions } from "@project-serum/serum";
 import { mintTo } from "@project-serum/serum/lib/token-instructions";
 import assert from "assert";
+import { newAccountWithLamports } from "./utils";
 
 export interface ProgramState {
   debtType: web3.PublicKey;
@@ -30,6 +31,8 @@ export interface ProgramState {
 }
 
 export interface UserState {
+  userWallet: web3.Account;
+  userProvider: Provider;
   // User collateral token address
   collateralTokenAccount: web3.PublicKey;
   // User debt token address
@@ -48,6 +51,7 @@ const programState: ProgramState = {
 } as any;
 
 const userState: UserState = {
+  userWallet: null,
   vault: null,
   debtTokenAccount: null,
   collateralTokenAccount: null,
@@ -59,7 +63,7 @@ describe("Parrot Lending", async () => {
 
   const program: Program = workspace.Parrot;
   const provider: Provider = program.provider;
-  const wallet: NodeWallet = provider.wallet as any;
+  const wallet: Wallet = provider.wallet as any;
 
   it("Init new Debt Type (pUSD)", async () => {
     const debtType = new web3.Account();
@@ -140,16 +144,20 @@ describe("Parrot Lending", async () => {
   });
 
   it("Create user collateral token account and airdrop 100 BTC for testing", async () => {
+    const userWallet = await newAccountWithLamports(provider.connection);
+    userState.userWallet = userWallet;
+    userState.userProvider = new Provider(provider.connection, new Wallet(userWallet), {});
+
     const collateralTokenAccount = await createTokenAccount(
-      provider,
+      userState.userProvider,
       programState.collateralToken,
-      wallet.publicKey
+      userState.userWallet.publicKey
     );
     userState.collateralTokenAccount = collateralTokenAccount;
 
     // airdrop 100 token to the user
     const airdropAmount = new BN(100);
-    const minter = await getMintInfo(provider, programState.collateralToken);
+    const minter = await getMintInfo(userState.userProvider, programState.collateralToken);
     const tx = new web3.Transaction();
     tx.add(
       mintTo({
@@ -159,9 +167,9 @@ describe("Parrot Lending", async () => {
         amount: airdropAmount,
       })
     );
-    await provider.send(tx, [wallet.payer]);
+    await userState.userProvider.send(tx, [wallet.payer]);
     const checkBalance = await getTokenAccount(
-      provider,
+      userState.userProvider,
       collateralTokenAccount
     );
 
@@ -170,9 +178,9 @@ describe("Parrot Lending", async () => {
 
   it("Create user debt token account for testing", async () => {
     const debtTokenAccount = await createTokenAccount(
-      provider,
+      userState.userProvider,
       programState.debtToken,
-      wallet.publicKey
+      userState.userWallet.publicKey
     );
     userState.debtTokenAccount = debtTokenAccount;
   });
@@ -190,7 +198,7 @@ describe("Parrot Lending", async () => {
         debtType: programState.debtType,
         vaultType: programState.vaultType,
         vault: vault.publicKey,
-        owner: wallet.publicKey,
+        owner: userState.userWallet.publicKey,
         rent: web3.SYSVAR_RENT_PUBKEY,
       },
       signers: [vault],
@@ -212,15 +220,16 @@ describe("Parrot Lending", async () => {
         vaultType: programState.vaultType,
         vault: userState.vault,
         collateralFrom: userState.collateralTokenAccount,
-        collateralFromAuthority: wallet.publicKey,
+        collateralFromAuthority: userState.userWallet.publicKey,
         collateralTo: programState.collateralTokenHolder,
         tokenProgram: TokenInstructions.TOKEN_PROGRAM_ID,
       },
+      signers:[userState.userWallet]
     });
 
     const vaultAccount = await program.account.vault(userState.vault);
     const vaultCollateralBalance = await getTokenAccount(
-      provider,
+      userState.userProvider,
       programState.collateralTokenHolder
     );
     assert.ok(vaultAccount.collateralAmount.eq(amount));
@@ -236,7 +245,7 @@ describe("Parrot Lending", async () => {
         debtType: programState.debtType,
         vaultType: programState.vaultType,
         vault: userState.vault,
-        vaultOwner: wallet.publicKey, // Make sure is my vault
+        vaultOwner: userState.userWallet.publicKey, // Make sure is my vault
         receiver: userState.debtTokenAccount,
         debtToken: programState.debtToken,
         debtTokenAuthority: programState.debtTokenAuthority,
@@ -247,7 +256,7 @@ describe("Parrot Lending", async () => {
     // check if I received my pUSD tokens
     const vaultAccount = await program.account.vault(userState.vault);
     const userDebtBalance = await getTokenAccount(
-      provider,
+      userState.userProvider,
       userState.debtTokenAccount
     );
     assert.ok(vaultAccount.debtAmount.eq(amount));
@@ -263,18 +272,19 @@ describe("Parrot Lending", async () => {
         debtType: programState.debtType,
         vaultType: programState.vaultType,
         vault: userState.vault,
-        vaultOwner: wallet.publicKey, // Make sure is my vault
+        vaultOwner: userState.userWallet.publicKey, // Make sure is my vault
         debtToken: programState.debtToken,
         debtFrom: userState.debtTokenAccount,
-        debtFromAuthority: wallet.publicKey, // Authority for transfer token from debtFrom to burn
+        debtFromAuthority: userState.userWallet.publicKey, // Authority for transfer token from debtFrom to burn
         tokenProgram: TokenInstructions.TOKEN_PROGRAM_ID,
       },
+      signers:[userState.userWallet]
     });
 
     // check if I sent my pUSD debt tokens
     const vaultAccount = await program.account.vault(userState.vault);
     const userDebtBalance = await getTokenAccount(
-      provider,
+      userState.userProvider,
       userState.debtTokenAccount
     );
     assert.ok(vaultAccount.debtAmount.eq(new BN(0)));
@@ -289,7 +299,7 @@ describe("Parrot Lending", async () => {
       accounts: {
         vaultType: programState.vaultType,
         vault: userState.vault,
-        vaultOwner: wallet.publicKey, // Make sure is my vault
+        vaultOwner: userState.userWallet.publicKey, // Make sure is my vault
         receiver: userState.collateralTokenAccount,
         collateralToken: programState.collateralToken,
         collateralTokenHolder: programState.collateralTokenHolder,
@@ -299,11 +309,10 @@ describe("Parrot Lending", async () => {
       },
     });
 
-
     // check if I get my BTC collateral tokens back
     const vaultAccount = await program.account.vault(userState.vault);
     const userCollateralBalance = await getTokenAccount(
-      provider,
+      userState.userProvider,
       userState.collateralTokenAccount
     );    
     assert.ok(vaultAccount.collateralAmount.eq(new BN(0)));
